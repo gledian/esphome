@@ -3,6 +3,7 @@
 #include "ecocomfort2_hub.h"
 #include "esphome/core/log.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -107,7 +108,12 @@ void Ecocomfort2Hub::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if
       break;
     }
     case ESP_GATTC_SEARCH_CMPL_EVT: {
-      const auto service_uuid = espbt::ESPBTUUID::from_raw("f4b827c3-e660-4bc8-bdf6-3c8e9b845e0d");
+      // PROBE: an Ecocomfort 3 uses the same characteristics under its own service
+      auto service_uuid = espbt::ESPBTUUID::from_raw("f4b827c3-e660-4bc8-bdf6-3c8e9b845e0d");
+      if (this->parent_->get_service(service_uuid) == nullptr) {
+        service_uuid = espbt::ESPBTUUID::from_raw("d7f493cb-0a21-4c27-960e-19aaf936bbb6");
+        ESP_LOGI(TAG, "[%s] PROBE: using the Ecocomfort 3 service", this->parent_->address_str());
+      }
       const auto oper_uuid = espbt::ESPBTUUID::from_raw("b9d6f678-bc0d-4a73-90c8-60b0f07301f1");
       const auto state_uuid = espbt::ESPBTUUID::from_raw("438d3433-7e5a-459a-a8e4-66343fad2bb0");
       const auto info_uuid = espbt::ESPBTUUID::from_raw("f5f56229-dd4f-480f-a829-9189269d8b37");
@@ -284,6 +290,12 @@ void Ecocomfort2Hub::on_state_(const uint8_t *data, uint16_t len) {
   const uint16_t voc = encode_uint16(data[7], data[8]);
   ESP_LOGD(TAG, "[%s] C_STATE: mode=0x%02x, speed=0x%02x, %.2f °C, %.2f %%, %u ppb, direction=%u",
            this->parent_->address_str(), data[0], data[1], temperature, humidity, voc, data[2]);
+  // PROBE: the vendor app reads CO2 from bytes 9-10 and an air quality index from byte 11 on an Ecocomfort 3
+  if (len > 9) {
+    ESP_LOGI(TAG, "[%s] PROBE: C_STATE is %u bytes, bytes 9-11: %02x %02x %02x, co2=%u aqi=%u",
+             this->parent_->address_str(), len, data[9], len > 10 ? data[10] : 0, len > 11 ? data[11] : 0,
+             len > 10 ? encode_uint16(data[9], data[10]) : 0, len > 11 ? data[11] : 0);
+  }
 #ifdef USE_BINARY_SENSOR
   if (this->boost_binary_sensor_ != nullptr)
     this->boost_binary_sensor_->publish_state((data[1] & FLAG_BOOST) != 0);
@@ -385,6 +397,10 @@ void Ecocomfort2Hub::on_config_(const uint8_t *data, uint16_t len) {
     ESP_LOGW(TAG, "[%s] C_CONFIGURATION too short: %u bytes", this->parent_->address_str(), len);
     return;
   }
+  // PROBE: the Ecocomfort 3 layout may differ, so show every byte
+  char hex[format_hex_pretty_size(32)];
+  ESP_LOGI(TAG, "[%s] PROBE: C_CONFIGURATION raw: %s", this->parent_->address_str(),
+           format_hex_pretty_to(hex, data, std::min<size_t>(len, 32), ' '));
   // A write already updated the copy and the entity, so only a change made elsewhere or a refused write is new
   if (this->config_read_ && memcmp(this->thresholds_, data + 1, sizeof(this->thresholds_)) == 0 &&
       this->season_byte_ == data[4])
